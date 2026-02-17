@@ -16,13 +16,25 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max
     
     permissions:
       contents: read
     
     steps:
-    - name: Checkout code
+    - name: Maximize build space
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /opt/hostedtoolcache/CodeQL
+        sudo docker image prune --all --force
+        df -h
+        
+    - name: Checkout Virtualization module
       uses: actions/checkout@v4
+      with:
+        path: virtualization
       
     - name: Set up JDK 17
       uses: actions/setup-java@v4
@@ -30,97 +42,176 @@ jobs:
         java-version: '17'
         distribution: 'temurin'
         
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
-      
-    - name: Make Gradle wrapper executable
-      run: chmod +x ./gradlew
-      
-    - name: Build Terminal App with Gradle
-      id: gradle_build
+    - name: Install AOSP build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git-core gnupg flex bison build-essential zip curl \
+          zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 libncurses5 \
+          lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev \
+          libxml2-utils xsltproc unzip fontconfig python3 python-is-python3 rsync
+        
+    - name: Install repo tool
+      run: |
+        mkdir -p ~/.bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/.bin/repo
+        chmod a+rx ~/.bin/repo
+        export PATH="$HOME/.bin:$PATH"
+        
+    - name: Configure git
+      run: |
+        git config --global user.name "GitHub Actions Bot"
+        git config --global user.email "github-actions@github.com"
+        git config --global color.ui false
+        
+    - name: Set up AOSP workspace
+      run: |
+        mkdir -p ~/aosp
+        cd ~/aosp
+        echo "Initializing AOSP repo for main branch..."
+        ~/.bin/repo init -u https://android.googlesource.com/platform/manifest -b main --depth=1 --partial-clone
+        
+    - name: Create local manifest for minimal sync
+      run: |
+        mkdir -p ~/aosp/.repo/local_manifests
+        cat > ~/aosp/.repo/local_manifests/virtualization.xml << 'EOF'
+        <?xml version="1.0" encoding="UTF-8"?>
+        <manifest>
+          <!-- Only sync essential components for VmTerminalApp build -->
+          <project path="packages/modules/Virtualization" name="platform/packages/modules/Virtualization" groups="pdk" clone-depth="1" />
+        </manifest>
+        EOF
+        
+    - name: Sync AOSP (minimal components)
+      run: |
+        cd ~/aosp
+        echo "Syncing minimal AOSP components..."
+        # Sync with minimal depth and only current branch
+        ~/.bin/repo sync -c -j8 --force-sync --no-tags --no-clone-bundle --current-branch \
+          build/make \
+          build/soong \
+          build/blueprint \
+          prebuilts/sdk \
+          prebuilts/build-tools \
+          prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8 \
+          external/golang \
+          || true  # Continue even if some repos fail
+        echo "AOSP sync completed"
+        df -h
+        
+    - name: Copy Virtualization module
+      run: |
+        rm -rf ~/aosp/packages/modules/Virtualization
+        cp -r $GITHUB_WORKSPACE/virtualization ~/aosp/packages/modules/Virtualization
+        ls -la ~/aosp/packages/modules/Virtualization/android/TerminalApp/
+        
+    - name: Attempt AOSP build
+      id: aosp_build
       continue-on-error: true
       run: |
-        echo "Attempting to build VmTerminalApp with Gradle..."
-        ./gradlew :android:TerminalApp:assembleDebug --stacktrace
+        cd ~/aosp
+        source build/envsetup.sh
+        echo "Running banchan for VmTerminalApp..."
+        banchan VmTerminalApp aosp_arm64 || banchan com.android.virt aosp_arm64 || true
+        echo "Building VmTerminalApp..."
+        m VmTerminalApp 2>&1 | tee build.log || true
         
-    - name: Check build result
+    - name: Search for built APK
       run: |
-        if [ "${{ steps.gradle_build.outcome }}" == "success" ]; then
-          echo "✓ Gradle build succeeded!"
-          if [ -f "android/TerminalApp/build/outputs/apk/debug/TerminalApp-debug.apk" ]; then
-            echo "✓ APK file found at expected location"
-            cp android/TerminalApp/build/outputs/apk/debug/TerminalApp-debug.apk build/outputs/VmTerminalApp.apk
-          else
-            echo "⚠ APK not found at expected location, searching..."
-            find android/TerminalApp/build -name "*.apk" -type f
-          fi
+        echo "Searching for APK files..."
+        find ~/aosp/out -name "*.apk" -type f 2>/dev/null || echo "No APK files found"
+        mkdir -p $GITHUB_WORKSPACE/build/outputs
+        
+        # Try to find and copy APK
+        if find ~/aosp/out -name "VmTerminalApp*.apk" -type f | head -1 | xargs -I {} cp {} $GITHUB_WORKSPACE/build/outputs/VmTerminalApp.apk; then
+          echo "✓ APK found and copied"
+          ls -lh $GITHUB_WORKSPACE/build/outputs/VmTerminalApp.apk
         else
-          echo "⚠ Gradle build failed due to missing AOSP dependencies"
-          echo "Note: This app requires the full Android Open Source Project (AOSP) build environment"
-          echo "Missing dependencies include:"
-          echo "  - android.system.virtualmachine.* (AVF framework classes)"
-          echo "  - android.system.virtualizationservice_internal"
-          echo "  - framework-virtualization.impl"
-          echo "  - libcrosvm_android_display_service-java"
-          echo ""
-          echo "For a complete build, use AOSP build system:"
-          echo "  banchan com.android.virt aosp_arm64"
-          echo "  UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m VmTerminalApp"
-          echo ""
-          echo "Creating informational artifact..."
-          mkdir -p build/outputs
-          cat > build/outputs/BUILD_INFO.txt << 'EOF'
-        VmTerminalApp Build Information
-        ================================
-        
-        This Android application requires the Android Virtualization Framework (AVF)
-        and must be built using the AOSP build system, not standalone Gradle.
-        
-        Required Build Environment:
-        - Full AOSP source tree
-        - AVF framework components
-        - Android SDK API 31+
-        
-        Build Instructions:
-        1. Download AOSP source code
-        2. Navigate to AOSP root directory  
-        3. Run: banchan com.android.virt aosp_arm64
-        4. Run: UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m VmTerminalApp
-        
-        Missing AOSP-only Dependencies:
-        - android.system.virtualmachine.*
-        - android.system.virtualizationservice_internal
-        - framework-virtualization.impl
-        - framework-annotations-lib
-        - avf_aconfig_flags_java
-        - libcrosvm_android_display_service-java
-        - MicrodroidTestHelper
-        - libforwarder_host_jni
-        
-        Source Location: android/TerminalApp/
-        Build System: Android.bp (Soong)
-        Target SDK: 34
-        Min SDK: 31
-        EOF
-          echo "ℹ Created BUILD_INFO.txt with build instructions"
+          echo "⚠ APK not found - build likely incomplete"
+          echo "This is expected due to missing AOSP dependencies in minimal sync"
         fi
         
-    - name: Create build outputs directory
-      run: mkdir -p build/outputs
-      
-    - name: Copy build artifacts if available
+    - name: Create build documentation
       run: |
-        if [ -d "android/TerminalApp/build/outputs" ]; then
-          cp -r android/TerminalApp/build/outputs/* build/outputs/ || true
-        fi
-        # Ensure BUILD_INFO.txt exists
-        if [ ! -f "build/outputs/BUILD_INFO.txt" ]; then
-          cp build/outputs/BUILD_INFO.txt build/outputs/ 2>/dev/null || echo "Build completed with Gradle" > build/outputs/BUILD_INFO.txt
+        mkdir -p $GITHUB_WORKSPACE/build/outputs
+        cat > $GITHUB_WORKSPACE/build/outputs/README.txt << 'EOF'
+        VmTerminalApp AOSP Build Attempt
+        =================================
+        
+        This CI workflow attempted to build VmTerminalApp using the AOSP build system.
+        
+        Build Method: AOSP (repo + soong/make)
+        Target: VmTerminalApp (Android.bp)
+        Architecture: arm64
+        
+        Challenges in CI:
+        - Full AOSP source is 100GB+ (too large for CI)
+        - Build requires extensive dependencies
+        - Limited CI resources and time
+        - Partial repo sync may miss critical components
+        
+        For Complete Local Build:
+        =========================
+        
+        1. Install repo tool and AOSP dependencies
+        
+        2. Initialize AOSP repository:
+           mkdir ~/aosp && cd ~/aosp
+           repo init -u https://android.googlesource.com/platform/manifest -b main
+           
+        3. Sync AOSP sources (this takes time and ~100GB+ space):
+           repo sync -c -j$(nproc)
+           
+        4. Set up build environment:
+           source build/envsetup.sh
+           
+        5. Build the AVF module:
+           banchan com.android.virt aosp_arm64
+           UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m VmTerminalApp
+           
+        6. Find APK:
+           find out -name "VmTerminalApp*.apk"
+           
+        The APK will be in: out/target/product/*/system/priv-app/VmTerminalApp/
+        
+        Alternative: Build full APEX module
+        ====================================
+        banchan com.android.virt aosp_arm64
+        UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m apps_only dist
+        
+        Then install: adb install out/dist/com.android.virt.apex
+        
+        More info: https://source.android.com/docs/core/virtualization
+        EOF
+        
+        # Add build log if it exists
+        if [ -f ~/aosp/build.log ]; then
+          echo "" >> $GITHUB_WORKSPACE/build/outputs/README.txt
+          echo "=== Build Log (last 100 lines) ===" >> $GITHUB_WORKSPACE/build/outputs/README.txt
+          tail -100 ~/aosp/build.log >> $GITHUB_WORKSPACE/build/outputs/README.txt
         fi
         
     - name: Upload build artifacts
       uses: actions/upload-artifact@v6
       with:
-        name: VmTerminalApp
+        name: VmTerminalApp-AOSP-Build-Attempt
         path: build/outputs/
         retention-days: 30
+        
+    - name: Build summary
+      run: |
+        echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        if [ -f "$GITHUB_WORKSPACE/build/outputs/VmTerminalApp.apk" ]; then
+          echo "✅ **APK Successfully Built!**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- APK Size: $(ls -lh $GITHUB_WORKSPACE/build/outputs/VmTerminalApp.apk | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ **APK Build Incomplete**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The AOSP build system was attempted but the full build requires:" >> $GITHUB_STEP_SUMMARY
+          echo "- Complete AOSP source tree (~100GB+)" >> $GITHUB_STEP_SUMMARY
+          echo "- All framework dependencies" >> $GITHUB_STEP_SUMMARY
+          echo "- Extended build time (hours)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "See README.txt in artifacts for local build instructions." >> $GITHUB_STEP_SUMMARY
+        fi
