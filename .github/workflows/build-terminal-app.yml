@@ -1,15 +1,17 @@
-name: Build Android Terminal App
+name: Build Android Virtualization APEX
 
 on:
   push:
     branches: [ main, master ]
     paths:
-      - 'android/TerminalApp/**'
+      - 'android/**'
+      - 'libs/**'
       - '.github/workflows/build-terminal-app.yml'
   pull_request:
     branches: [ main, master ]
     paths:
-      - 'android/TerminalApp/**'
+      - 'android/**'
+      - 'libs/**'
       - '.github/workflows/build-terminal-app.yml'
   workflow_dispatch:
 
@@ -81,11 +83,11 @@ jobs:
         </manifest>
         EOF
         
-    - name: Sync AOSP (minimal components)
+    - name: Sync AOSP (components for APEX build)
       run: |
         cd ~/aosp
-        echo "Syncing minimal AOSP components..."
-        # Sync with minimal depth and only current branch
+        echo "Syncing AOSP components for com.android.virt APEX build..."
+        # Sync components needed for building the full APEX
         ~/.bin/repo sync -c -j8 --force-sync --no-tags --no-clone-bundle --current-branch \
           build/make \
           build/soong \
@@ -93,7 +95,16 @@ jobs:
           prebuilts/sdk \
           prebuilts/build-tools \
           prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8 \
+          prebuilts/clang/host/linux-x86 \
+          prebuilts/rust \
           external/golang \
+          external/rust/crates \
+          frameworks/base \
+          frameworks/native \
+          system/core \
+          system/libbase \
+          system/logging \
+          packages/modules/common \
           || true  # Continue even if some repos fail
         echo "AOSP sync completed"
         df -h
@@ -104,50 +115,82 @@ jobs:
         cp -r $GITHUB_WORKSPACE/virtualization ~/aosp/packages/modules/Virtualization
         ls -la ~/aosp/packages/modules/Virtualization/android/TerminalApp/
         
-    - name: Attempt AOSP build
+    - name: Build com.android.virt APEX
       id: aosp_build
-      continue-on-error: true
       run: |
         cd ~/aosp
         source build/envsetup.sh
-        echo "Running banchan for VmTerminalApp..."
-        banchan VmTerminalApp aosp_arm64 || banchan com.android.virt aosp_arm64 || true
-        echo "Building VmTerminalApp..."
-        m VmTerminalApp 2>&1 | tee build.log || true
+        echo "Setting up banchan for com.android.virt..."
+        banchan com.android.virt aosp_arm64
+        echo "Building com.android.virt APEX module..."
+        UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m apps_only dist 2>&1 | tee build.log
         
-    - name: Search for built APK
+    - name: Find and copy APEX
       run: |
-        echo "Searching for APK files..."
-        find ~/aosp/out -name "*.apk" -type f 2>/dev/null || echo "No APK files found"
+        echo "Searching for com.android.virt.apex..."
         mkdir -p $GITHUB_WORKSPACE/build/outputs
         
-        # Try to find and copy APK
-        if find ~/aosp/out -name "VmTerminalApp*.apk" -type f | head -1 | xargs -I {} cp {} $GITHUB_WORKSPACE/build/outputs/VmTerminalApp.apk; then
-          echo "✓ APK found and copied"
-          ls -lh $GITHUB_WORKSPACE/build/outputs/VmTerminalApp.apk
+        # Find the APEX in dist directory
+        APEX_FILE=$(find ~/aosp/out/dist -name "com.android.virt.apex" -type f | head -1)
+        
+        if [ -n "$APEX_FILE" ] && [ -f "$APEX_FILE" ]; then
+          echo "✓ APEX found at: $APEX_FILE"
+          cp "$APEX_FILE" $GITHUB_WORKSPACE/build/outputs/com.android.virt.apex
+          ls -lh $GITHUB_WORKSPACE/build/outputs/com.android.virt.apex
         else
-          echo "⚠ APK not found - build likely incomplete"
-          echo "This is expected due to missing AOSP dependencies in minimal sync"
+          echo "❌ APEX not found in out/dist"
+          echo "Searching in entire out directory..."
+          find ~/aosp/out -name "*.apex" -type f 2>/dev/null || echo "No APEX files found"
+          exit 1
         fi
+        
+    - name: Extract APEX payload
+      run: |
+        cd $GITHUB_WORKSPACE/build/outputs
+        
+        echo "Extracting APEX payload..."
+        # APEX files are ZIP archives, we can extract them
+        mkdir -p apex_extracted
+        unzip -q com.android.virt.apex -d apex_extracted
+        
+        echo "Contents of APEX:"
+        ls -lah apex_extracted/
+        
+        # Create tarball of the payload
+        echo "Creating tarball of APEX payload..."
+        tar -czf com.android.virt.apex-payload.tar.gz -C apex_extracted .
+        
+        echo "✓ Payload tarball created"
+        ls -lh com.android.virt.apex-payload.tar.gz
+        
+        # Clean up extracted directory to save space
+        rm -rf apex_extracted
         
     - name: Create build documentation
       run: |
         mkdir -p $GITHUB_WORKSPACE/build/outputs
         cat > $GITHUB_WORKSPACE/build/outputs/README.txt << 'EOF'
-        VmTerminalApp AOSP Build Attempt
-        =================================
+        com.android.virt APEX Build
+        ============================
         
-        This CI workflow attempted to build VmTerminalApp using the AOSP build system.
+        This CI workflow built the complete com.android.virt.apex module using AOSP build system.
         
         Build Method: AOSP (repo + soong/make)
-        Target: VmTerminalApp (Android.bp)
+        Target: com.android.virt (APEX module)
         Architecture: arm64
         
-        Challenges in CI:
-        - Full AOSP source is 100GB+ (too large for CI)
-        - Build requires extensive dependencies
-        - Limited CI resources and time
-        - Partial repo sync may miss critical components
+        Artifacts:
+        - com.android.virt.apex: The complete APEX module
+        - com.android.virt.apex-payload.tar.gz: Extracted APEX payload contents
+        
+        Installation:
+        =============
+        
+        To install the APEX on a device:
+        1. Ensure device has AVF support
+        2. Install via adb:
+           adb install com.android.virt.apex
+           adb reboot
         
         For Complete Local Build:
         =========================
@@ -164,21 +207,12 @@ jobs:
         4. Set up build environment:
            source build/envsetup.sh
            
-        5. Build the AVF module:
+        5. Build the AVF APEX module:
            banchan com.android.virt aosp_arm64
-           UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m VmTerminalApp
+           UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m apps_only dist
            
-        6. Find APK:
-           find out -name "VmTerminalApp*.apk"
-           
-        The APK will be in: out/target/product/*/system/priv-app/VmTerminalApp/
-        
-        Alternative: Build full APEX module
-        ====================================
-        banchan com.android.virt aosp_arm64
-        UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m apps_only dist
-        
-        Then install: adb install out/dist/com.android.virt.apex
+        6. Find APEX:
+           ls out/dist/com.android.virt.apex
         
         More info: https://source.android.com/docs/core/virtualization
         EOF
@@ -186,32 +220,47 @@ jobs:
         # Add build log if it exists
         if [ -f ~/aosp/build.log ]; then
           echo "" >> $GITHUB_WORKSPACE/build/outputs/README.txt
-          echo "=== Build Log (last 100 lines) ===" >> $GITHUB_WORKSPACE/build/outputs/README.txt
-          tail -100 ~/aosp/build.log >> $GITHUB_WORKSPACE/build/outputs/README.txt
+          echo "=== Build Log (last 200 lines) ===" >> $GITHUB_WORKSPACE/build/outputs/README.txt
+          tail -200 ~/aosp/build.log >> $GITHUB_WORKSPACE/build/outputs/README.txt
         fi
         
     - name: Upload build artifacts
       uses: actions/upload-artifact@v6
       with:
-        name: VmTerminalApp-AOSP-Build-Attempt
-        path: build/outputs/
+        name: com.android.virt-APEX-Build
+        path: |
+          build/outputs/com.android.virt.apex
+          build/outputs/com.android.virt.apex-payload.tar.gz
+          build/outputs/README.txt
         retention-days: 30
         
     - name: Build summary
       run: |
         echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        if [ -f "$GITHUB_WORKSPACE/build/outputs/VmTerminalApp.apk" ]; then
-          echo "✅ **APK Successfully Built!**" >> $GITHUB_STEP_SUMMARY
+        if [ -f "$GITHUB_WORKSPACE/build/outputs/com.android.virt.apex" ]; then
+          echo "✅ **APEX Successfully Built!**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- APK Size: $(ls -lh $GITHUB_WORKSPACE/build/outputs/VmTerminalApp.apk | awk '{print $5}')" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts:" >> $GITHUB_STEP_SUMMARY
+          echo "- **APEX File**: \`com.android.virt.apex\` ($(ls -lh $GITHUB_WORKSPACE/build/outputs/com.android.virt.apex | awk '{print $5}'))" >> $GITHUB_STEP_SUMMARY
+          if [ -f "$GITHUB_WORKSPACE/build/outputs/com.android.virt.apex-payload.tar.gz" ]; then
+            echo "- **Payload Tarball**: \`com.android.virt.apex-payload.tar.gz\` ($(ls -lh $GITHUB_WORKSPACE/build/outputs/com.android.virt.apex-payload.tar.gz | awk '{print $5}'))" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "adb install com.android.virt.apex" >> $GITHUB_STEP_SUMMARY
+          echo "adb reboot" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
         else
-          echo "⚠️ **APK Build Incomplete**" >> $GITHUB_STEP_SUMMARY
+          echo "❌ **APEX Build Failed**" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "The AOSP build system was attempted but the full build requires:" >> $GITHUB_STEP_SUMMARY
-          echo "- Complete AOSP source tree (~100GB+)" >> $GITHUB_STEP_SUMMARY
-          echo "- All framework dependencies" >> $GITHUB_STEP_SUMMARY
-          echo "- Extended build time (hours)" >> $GITHUB_STEP_SUMMARY
+          echo "The build process encountered errors. Check the build log for details." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Common issues:" >> $GITHUB_STEP_SUMMARY
+          echo "- Incomplete AOSP source sync" >> $GITHUB_STEP_SUMMARY
+          echo "- Missing dependencies" >> $GITHUB_STEP_SUMMARY
+          echo "- Build environment issues" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "See README.txt in artifacts for local build instructions." >> $GITHUB_STEP_SUMMARY
         fi
