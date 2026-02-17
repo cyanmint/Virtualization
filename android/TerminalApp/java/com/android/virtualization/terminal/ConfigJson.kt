@@ -79,8 +79,18 @@ internal data class ConfigJson(
 
     /** Converts this parsed JSON into VirtualMachineConfig Builder */
     fun toConfigBuilder(context: Context): VirtualMachineConfig.Builder {
+        // Check SharedPreferences for VM protection override
+        val sharedPref = context.getSharedPreferences(
+            VmPreferences.PREFS_NAME,
+            Context.MODE_PRIVATE
+        )
+        val vmProtected = sharedPref.getBoolean(
+            VmPreferences.KEY_VM_PROTECTED,
+            isProtected  // Use config file value as default
+        )
+        
         return VirtualMachineConfig.Builder(context)
-            .setProtectedVm(isProtected)
+            .setProtectedVm(vmProtected)
             .setMemoryBytes(memory_mib.toLong() * 1024 * 1024)
             .setConsoleInputDevice(console_input_device)
             .setCpuTopology(getCpuTopology())

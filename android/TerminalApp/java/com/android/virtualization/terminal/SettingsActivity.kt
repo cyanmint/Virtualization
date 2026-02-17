@@ -31,6 +31,14 @@ class SettingsActivity : AppCompatActivity() {
         val toolbar: MaterialToolbar = findViewById(R.id.settings_toolbar)
         setSupportActionBar(toolbar)
         var settingsItems = mutableListOf<SettingsItem>()
+        settingsItems.add(
+            SettingsItem(
+                resources.getString(R.string.settings_vm_protection_title),
+                resources.getString(R.string.settings_vm_protection_sub_title),
+                R.drawable.baseline_security_24,
+                SettingsItemEnum.VmProtection,
+            )
+        )
         if (!Flags.terminalStorageBalloon()) {
             settingsItems.add(
                 SettingsItem(

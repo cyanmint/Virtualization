@@ -195,4 +195,17 @@
 
     <!-- Default title of a terminal tab [CHAR LIMIT=10] -->
     <string name="tab_default_title">Tab</string>
+
+    <!-- Settings menu title for VM protection [CHAR LIMIT=none] -->
+    <string name="settings_vm_protection_title">VM Protection</string>
+    <!-- Settings menu subtitle for VM protection [CHAR LIMIT=none] -->
+    <string name="settings_vm_protection_sub_title">Use protected or non-protected VM</string>
+    <!-- Settings VM protection toggle label [CHAR LIMIT=none] -->
+    <string name="settings_vm_protection_toggle_label">Protected VM</string>
+    <!-- Settings VM protection toggle description when enabled [CHAR LIMIT=none] -->
+    <string name="settings_vm_protection_enabled_desc">VM is running in protected mode for enhanced security</string>
+    <!-- Settings VM protection toggle description when disabled [CHAR LIMIT=none] -->
+    <string name="settings_vm_protection_disabled_desc">VM is running in non-protected mode</string>
+    <!-- Settings VM protection restart message [CHAR LIMIT=none] -->
+    <string name="settings_vm_protection_restart_message">Restart terminal to apply VM protection changes</string>
 </resources>
