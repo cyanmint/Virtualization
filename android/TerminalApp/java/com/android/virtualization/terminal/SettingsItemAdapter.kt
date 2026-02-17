@@ -55,6 +55,7 @@ class SettingsItemAdapter(private val dataSet: List<SettingsItem>) :
                         SettingsItemEnum.PortForwarding ->
                             SettingsPortForwardingActivity::class.java
                         SettingsItemEnum.Recovery -> SettingsRecoveryActivity::class.java
+                        SettingsItemEnum.VmProtection -> SettingsVmProtectionActivity::class.java
                     },
                 )
             view.context.startActivity(intent)

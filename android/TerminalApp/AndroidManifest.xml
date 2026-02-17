@@ -56,6 +56,8 @@
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden|navigation|uiMode|screenLayout|smallestScreenSize" />
         <activity android:name=".SettingsActivity"
             android:label="@string/action_settings" />
+        <activity android:name=".SettingsVmProtectionActivity"
+            android:label="@string/settings_vm_protection_title" />
         <activity android:name=".SettingsDiskResizeActivity"
             android:label="@string/settings_disk_resize_title" />
         <activity android:name=".SettingsPortForwardingActivity"

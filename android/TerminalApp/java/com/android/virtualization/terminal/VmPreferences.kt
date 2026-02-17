@@ -15,16 +15,7 @@
  */
 package com.android.virtualization.terminal
 
-enum class SettingsItemEnum {
-    DiskResize,
-    PortForwarding,
-    Recovery,
-    VmProtection,
+object VmPreferences {
+    const val PREFS_NAME = "VmTerminalAppPrefs"
+    const val KEY_VM_PROTECTED = "vm_protected"
 }
-
-class SettingsItem(
-    val title: String,
-    val subTitle: String,
-    val icon: Int,
-    val settingsItemEnum: SettingsItemEnum,
-) {}
