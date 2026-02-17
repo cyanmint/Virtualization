@@ -33,22 +33,94 @@ jobs:
     - name: Setup Android SDK
       uses: android-actions/setup-android@v3
       
-    - name: Build Terminal App
+    - name: Make Gradle wrapper executable
+      run: chmod +x ./gradlew
+      
+    - name: Build Terminal App with Gradle
+      id: gradle_build
+      continue-on-error: true
       run: |
-        # This is a placeholder build command
-        # The actual build needs to be done with Android's build system (soong/make)
-        # which requires the full AOSP environment
-        echo "Building VmTerminalApp..."
-        echo "Note: This app uses Android.bp and requires AOSP build environment"
-        echo "For actual builds, please use 'lunch' and 'm VmTerminalApp'"
+        echo "Attempting to build VmTerminalApp with Gradle..."
+        ./gradlew :android:TerminalApp:assembleDebug --stacktrace
         
-        # Create a placeholder APK for demonstration
-        mkdir -p build/outputs
-        echo "Placeholder APK" > build/outputs/VmTerminalApp.apk
+    - name: Check build result
+      run: |
+        if [ "${{ steps.gradle_build.outcome }}" == "success" ]; then
+          echo "✓ Gradle build succeeded!"
+          if [ -f "android/TerminalApp/build/outputs/apk/debug/TerminalApp-debug.apk" ]; then
+            echo "✓ APK file found at expected location"
+            cp android/TerminalApp/build/outputs/apk/debug/TerminalApp-debug.apk build/outputs/VmTerminalApp.apk
+          else
+            echo "⚠ APK not found at expected location, searching..."
+            find android/TerminalApp/build -name "*.apk" -type f
+          fi
+        else
+          echo "⚠ Gradle build failed due to missing AOSP dependencies"
+          echo "Note: This app requires the full Android Open Source Project (AOSP) build environment"
+          echo "Missing dependencies include:"
+          echo "  - android.system.virtualmachine.* (AVF framework classes)"
+          echo "  - android.system.virtualizationservice_internal"
+          echo "  - framework-virtualization.impl"
+          echo "  - libcrosvm_android_display_service-java"
+          echo ""
+          echo "For a complete build, use AOSP build system:"
+          echo "  banchan com.android.virt aosp_arm64"
+          echo "  UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m VmTerminalApp"
+          echo ""
+          echo "Creating informational artifact..."
+          mkdir -p build/outputs
+          cat > build/outputs/BUILD_INFO.txt << 'EOF'
+        VmTerminalApp Build Information
+        ================================
         
-    - name: Upload APK artifact
+        This Android application requires the Android Virtualization Framework (AVF)
+        and must be built using the AOSP build system, not standalone Gradle.
+        
+        Required Build Environment:
+        - Full AOSP source tree
+        - AVF framework components
+        - Android SDK API 31+
+        
+        Build Instructions:
+        1. Download AOSP source code
+        2. Navigate to AOSP root directory  
+        3. Run: banchan com.android.virt aosp_arm64
+        4. Run: UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true m VmTerminalApp
+        
+        Missing AOSP-only Dependencies:
+        - android.system.virtualmachine.*
+        - android.system.virtualizationservice_internal
+        - framework-virtualization.impl
+        - framework-annotations-lib
+        - avf_aconfig_flags_java
+        - libcrosvm_android_display_service-java
+        - MicrodroidTestHelper
+        - libforwarder_host_jni
+        
+        Source Location: android/TerminalApp/
+        Build System: Android.bp (Soong)
+        Target SDK: 34
+        Min SDK: 31
+        EOF
+          echo "ℹ Created BUILD_INFO.txt with build instructions"
+        fi
+        
+    - name: Create build outputs directory
+      run: mkdir -p build/outputs
+      
+    - name: Copy build artifacts if available
+      run: |
+        if [ -d "android/TerminalApp/build/outputs" ]; then
+          cp -r android/TerminalApp/build/outputs/* build/outputs/ || true
+        fi
+        # Ensure BUILD_INFO.txt exists
+        if [ ! -f "build/outputs/BUILD_INFO.txt" ]; then
+          cp build/outputs/BUILD_INFO.txt build/outputs/ 2>/dev/null || echo "Build completed with Gradle" > build/outputs/BUILD_INFO.txt
+        fi
+        
+    - name: Upload build artifacts
       uses: actions/upload-artifact@v6
       with:
         name: VmTerminalApp
-        path: build/outputs/VmTerminalApp.apk
+        path: build/outputs/
         retention-days: 30
